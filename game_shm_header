@@ -4,11 +4,11 @@
 #include <sys/mman.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <pthread.h>
+#include <semaphore.h>
 
-#define MAX_TOTAL 30;
-#define MAX_PLAYERS 5;
-#define MIN_PLAYERS 3;
+#define MAX_TOTAL 30
+#define MAX_PLAYERS 5
+#define MIN_PLAYERS 3
 
 typedef struct{
 //
@@ -18,13 +18,13 @@ int winner;
 int game_over;
 //
 int numOf_players;
-int activePlayers;
-char playerNames[20];
+int activePlayers[MAX_PLAYERS];
+char playerNames[MAX_PLAYERS][20];
 //
 int moves;
 int invalid_moves;
 //
-pthread_mutex_t game_mutex;
+sem_t game_sem ;
 } ThirtyFirstGame;
 
 int create_game_shm(void);
