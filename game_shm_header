@@ -6,6 +6,8 @@
 #include <unistd.h>
 #include <semaphore.h>
 
+#define SHM_NAME "/game_shm"
+
 #define MAX_TOTAL 30
 #define MAX_PLAYERS 5
 #define MIN_PLAYERS 3
