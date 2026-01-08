@@ -1,0 +1,35 @@
+#ifndef GAME_SHM_H
+#define GAME_SHM_H
+
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <pthread.h>
+
+#define MAX_TOTAL 30;
+#define MAX_PLAYERS 5;
+#define MIN_PLAYERS 3;
+
+typedef struct{
+//
+int total;
+int current_player;
+int winner;
+int game_over;
+//
+int numOf_players;
+int activePlayers;
+char playerNames[20];
+//
+int moves;
+int invalid_moves;
+//
+pthread_mutex_t game_mutex;
+} ThirtyFirstGame;
+
+int create_game_shm(void);
+ThirtyFirstGame* attach_game_shm(void);
+void detach_game_shm(ThirtyFirstGame *game);
+void destroy_game_shm(void);
+
+#endif
