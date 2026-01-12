@@ -1,0 +1,98 @@
+#include <stdio.h>
+#include <semaphore.h>
+#include "game_shm.h"
+
+// Your original game logic, adapted for shared memory
+int make_move(ThirtyFirstGame *game, int player_id, int move) {
+    // Lock semaphore before accessing shared data
+    sem_wait(&game->game_sem);
+    
+    int result = 0;
+    
+    // Check if game is over
+    if (game->game_over) {
+        result = -1;  // Game already ended
+        goto unlock;
+    }
+    
+    // Check if it's player's turn
+    if (game->current_player != player_id) {
+        result = -2;  // Not your turn
+        goto unlock;
+    }
+    
+    // Check if player is active
+    if (!game->activePlayers[player_id]) {
+        result = -3;  // Player disconnected
+        goto unlock;
+    }
+    
+    // YOUR ORIGINAL VALIDATION LOGIC:
+    if (move < 1 || move > MAX_MOVE) {
+        game->invalid_moves++;
+        result = -4;  // Invalid move
+        goto unlock;
+    }
+    
+    if (game->total + move > MAX_TOTAL) {
+        game->invalid_moves++;
+        result = -5;  // Would exceed 30
+        goto unlock;
+    }
+    
+    // VALID MOVE - apply it
+    game->total += move;
+    game->moves++;
+    
+    // Check win (your original condition)
+    if (game->total == MAX_TOTAL) {
+        game->winner = player_id;
+        game->game_over = 1;
+        result = 1;  // Win!
+    } else {
+        // Move to next active player
+        do {
+            game->current_player = (game->current_player + 1) % game->numOf_players;
+        } while (!game->activePlayers[game->current_player]);
+        
+        result = 0;  // Success, continue
+    }
+
+unlock:
+    sem_post(&game->game_sem);
+    return result;
+}
+
+void init_game(ThirtyFirstGame *game, int num_players) {
+    // Initialize semaphore as PROCESS-SHARED
+    sem_init(&game->game_sem, 1, 1);  // 1 = process-shared
+    
+    // Initialize game state
+    game->total = 0;
+    game->numOf_players = num_players;
+    game->current_player = 0;
+    game->game_over = 0;
+    game->winner = -1;
+    game->moves = 0;
+    game->invalid_moves = 0;
+    
+    for (int i = 0; i < num_players; i++) {
+        game->activePlayers[i] = 1;
+        sprintf(game->playerNames[i], "Player%d", i+1);
+    }
+}
+
+void print_game_state(ThirtyFirstGame *game) {
+    sem_wait(&game->game_sem);
+    
+    printf("\n=== GAME STATE ===\n");
+    printf("Total: %d/%d\n", game->total, MAX_TOTAL);
+    printf("Current player: %s\n", game->playerNames[game->current_player]);
+    printf("Moves made: %d\n", game->moves);
+    
+    if (game->game_over) {
+        printf("GAME OVER! Winner: %s\n", game->playerNames[game->winner]);
+    }
+    
+    sem_post(&game->game_sem);
+}
