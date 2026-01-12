@@ -1,4 +1,61 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <game_shm.h>
+#include <errno.h>
+#include <semaphore.h>
+#include "game_shm.h"
+
+int create_game_shm(void) {
+    // Remove existing shared memory first
+    shm_unlink(SHM_NAME);
+    
+    // Create shared memory (EXACTLY like Lab Exercise 5, page 17)
+    int shm_fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
+    if (shm_fd == -1) {
+        perror("shm_open failed");
+        return -1;
+    }
+    
+    // Set size (like Lab Exercise 5, page 17)
+    if (ftruncate(shm_fd, sizeof(ThirtyFirstGame)) == -1) {
+        perror("ftruncate failed");
+        close(shm_fd);
+        shm_unlink(SHM_NAME);
+        return -1;
+    }
+    
+    return shm_fd;
+}
+
+ThirtyFirstGame* attach_game_shm(void) {
+    // Open existing shared memory (like Lab Exercise 5, page 19)
+    int shm_fd = shm_open(SHM_NAME, O_RDWR, 0666);
+    if (shm_fd == -1) {
+        perror("shm_open (attach) failed");
+        return NULL;
+    }
+    
+    // Map into process (like Lab Exercise 5, page 18)
+    ThirtyFirstGame* game = mmap(NULL, sizeof(ThirtyFirstGame),
+                                 PROT_READ | PROT_WRITE,
+                                 MAP_SHARED, shm_fd, 0);
+    
+    if (game == MAP_FAILED) {
+        perror("mmap failed");
+        close(shm_fd);
+        return NULL;
+    }
+    
+    close(shm_fd); // Can close after mmap (from Lab)
+    return game;
+}
+
+void detach_game_shm(ThirtyFirstGame *game) {
+    if (game) {
+        munmap(game, sizeof(ThirtyFirstGame)); // Like Lab page 19
+    }
+}
+
+void destroy_game_shm(void) {
+    shm_unlink(SHM_NAME); // Like Lab page 19
+}
