@@ -46,7 +46,7 @@ ThirtyFirstGame* attach_game_shm(void) {
         return NULL;
     }
     
-    close(shm_fd); // Can close after mmap (from Lab)
+    close(shm_fd); // Can close after mmap 
     return game;
 }
 
