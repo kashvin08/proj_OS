@@ -3,7 +3,7 @@
 
 void findWaitingTime(int processes[], int n, int bt[], int wt[], int quantum)
 {
-    int rem_bt[n];
+    int rem_bt[n]; //remaining burst time
 
     for (int i = 0; i < n; i++)
         rem_bt[i] = bt[i];
@@ -53,7 +53,7 @@ void findavgTime(int processes[], int n, int bt[], int quantum)
     findWaitingTime(processes, n, bt, wt, quantum);
     findTurnAroundTime(processes, n, bt, wt, tat);
 
-    printf("PN\tBT\tWT\tTAT\n");
+    printf("PN\tBT\tWT\tTAT\n"); //process name, burst time, waiting time, turnaround time
 
     for (int i = 0; i < n; i++)
     {
