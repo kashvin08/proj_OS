@@ -11,12 +11,15 @@
 
 #include "include/protocol.h"
 #include "include/game.h"
-#include <semaphore.h>
 #include "include/state.h"
+
+// Round-robin quantum (seconds)
+#define RR_QUANTUM 30
 
 static GameState *g_state = NULL;
 static sem_t *g_sem = NULL;
 static volatile sig_atomic_t g_running = 1;
+static time_t g_turn_start_time = 0;
 
 static void on_sigint(int sig) { (void)sig; g_running = 0; }
 static void on_sigchld(int sig) { (void)sig; while (waitpid(-1, NULL, WNOHANG) > 0); }
@@ -59,50 +62,58 @@ static int read_all(int fd, void *buf, size_t n) {
     return 1;
 }
 
-// Round-robin scheduler functions
-static void advance_turn(void) {
+// Round-robin scheduler: advance to next active player
+static void rr_advance_turn(void) {
     sem_wait(g_sem);
     
-    if (g_state->player_count < 2) {
+    if (g_state->player_count == 0) {
         sem_post(g_sem);
         return;
     }
     
     int start = g_state->current_turn;
     int next = start;
+    int attempts = 0;
     
-    // Find next active player
     do {
         next = (next + 1) % MAX_PLAYERS;
+        attempts++;
+        
         if (g_state->players[next].active) {
             g_state->current_turn = next;
-            g_state->turn_start_time = time(NULL);
+            g_turn_start_time = time(NULL);
             break;
         }
-    } while (next != start);
+        
+        // If we've checked all slots and none are active, keep current
+        if (attempts >= MAX_PLAYERS) {
+            break;
+        }
+    } while (1);
     
     sem_post(g_sem);
 }
 
-static void check_turn_timeout(void) {
+// Check if current turn has timed out
+static void rr_check_timeout(void) {
     sem_wait(g_sem);
     
-    if (g_state->player_count < 2 || !g_state->game_started) {
+    if (g_state->player_count == 0) {
         sem_post(g_sem);
         return;
     }
     
     time_t now = time(NULL);
-    if (now - g_state->turn_start_time > TIME_QUANTUM) {
-        printf("[SERVER] Player %s timeout, skipping turn\n",
+    if (now - g_turn_start_time > RR_QUANTUM) {
+        printf("[SERVER] Player %s timed out, skipping turn\n",
                g_state->players[g_state->current_turn].name);
-        advance_turn();
-        g_state->turn_start_time = now;
+        rr_advance_turn();
     }
     
     sem_post(g_sem);
 }
 
+// Find player slot by PID
 static int find_player_slot_by_pid(pid_t pid) {
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (g_state->players[i].active && g_state->players[i].pid == pid) {
@@ -112,28 +123,38 @@ static int find_player_slot_by_pid(pid_t pid) {
     return -1;
 }
 
+// Find first free player slot
 static int find_free_player_slot(void) {
     for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (!g_state->players[i].active) return i;
+        if (!g_state->players[i].active) {
+            return i;
+        }
     }
     return -1;
 }
 
-static void debug_print_players(void) {
-    printf("[SERVER] Players (count=%d, turn=%d):\n", g_state->player_count, g_state->current_turn);
+// Debug function to show current state
+static void debug_print_state(void) {
+    printf("[SERVER] Total=%d, Players=%d, Current turn: ", 
+           g_state->total, g_state->player_count);
+    
+    if (g_state->player_count > 0 && g_state->players[g_state->current_turn].active) {
+        printf("%s (slot %d)\n", 
+               g_state->players[g_state->current_turn].name, 
+               g_state->current_turn);
+    } else {
+        printf("none\n");
+    }
+    
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (g_state->players[i].active) {
-            printf("  slot %d: %s (pid=%d)\n", i, g_state->players[i].name, (int)g_state->players[i].pid);
+            printf("  Slot %d: %s (pid=%d)\n", 
+                   i, g_state->players[i].name, (int)g_state->players[i].pid);
         }
     }
 }
 
-static void notify_all_players(const char *message) {
-    // This would notify all connected players about game events
-    // For simplicity, we'll just print to console
-    printf("[SERVER BROADCAST] %s\n", message);
-}
-
+// Child process session handler
 static void child_session_loop(const char *req_fifo, const char *reply_fifo, const char *player_name, pid_t client_pid) {
     int req_fd = open(req_fifo, O_RDONLY);
     if (req_fd < 0) {
@@ -149,29 +170,14 @@ static void child_session_loop(const char *req_fifo, const char *reply_fifo, con
     }
 
     ServerMsg out = {0};
-    int player_slot = find_player_slot_by_pid(client_pid);
     
     // Send welcome message
-    if (player_slot >= 0) {
-        sem_wait(g_sem);
-        out.ok = 1;
-        if (g_state->player_count >= 2 && !g_state->game_started) {
-            g_state->game_started = 1;
-            snprintf(out.text, sizeof(out.text),
-                    "Game started! Shared total=%d. Players take turns in round-robin order.",
-                    g_state->total);
-        } else if (g_state->game_started) {
-            snprintf(out.text, sizeof(out.text),
-                    "Welcome %s! Game already in progress. Shared total=%d. Current turn: %s",
-                    player_name, g_state->total, g_state->players[g_state->current_turn].name);
-        } else {
-            snprintf(out.text, sizeof(out.text),
-                    "Welcome %s! Waiting for more players (need %d total).",
-                    player_name, 2 - g_state->player_count);
-        }
-        sem_post(g_sem);
-        write_all(rep_fd, &out, sizeof(out));
-    }
+    out.ok = 1;
+    snprintf(out.text, sizeof(out.text), 
+             "Welcome %s! You are connected. Type moves 1-3 or 'quit'.\n"
+             "Game starts with 2+ players. Turns rotate automatically.",
+             player_name);
+    write_all(rep_fd, &out, sizeof(out));
 
     while (1) {
         ClientMsg in = {0};
@@ -183,25 +189,30 @@ static void child_session_loop(const char *req_fifo, const char *reply_fifo, con
         if (in.type == MSG_MOVE) {
             sem_wait(g_sem);
             
-            // Check if game has enough players
+            // Find this player's slot
+            int player_slot = find_player_slot_by_pid(client_pid);
+            
+            // Check if enough players
             if (g_state->player_count < 2) {
                 sem_post(g_sem);
                 out.ok = 0;
                 snprintf(out.text, sizeof(out.text), 
-                        "Waiting for more players (need %d total).", 2 - g_state->player_count);
+                        "Need at least 2 players to start. Currently %d/2.",
+                        g_state->player_count);
                 write_all(rep_fd, &out, sizeof(out));
                 continue;
             }
             
-            // Check if it's this player's turn
-            int current_slot = find_player_slot_by_pid(in.pid);
-            if (current_slot != g_state->current_turn) {
+            // Check if it's this player's turn (RR enforcement)
+            if (player_slot != g_state->current_turn) {
+                int time_left = RR_QUANTUM - (int)(time(NULL) - g_turn_start_time);
+                if (time_left < 0) time_left = 0;
+                
                 sem_post(g_sem);
                 out.ok = 0;
                 snprintf(out.text, sizeof(out.text), 
-                        "Not your turn! Waiting for %s's move (%d seconds remaining).",
-                        g_state->players[g_state->current_turn].name,
-                        TIME_QUANTUM - (int)(time(NULL) - g_state->turn_start_time));
+                        "Not your turn! Current turn: %s (%d seconds remaining)",
+                        g_state->players[g_state->current_turn].name, time_left);
                 write_all(rep_fd, &out, sizeof(out));
                 continue;
             }
@@ -220,43 +231,39 @@ static void child_session_loop(const char *req_fifo, const char *reply_fifo, con
             int win = apply_move(&g_state->total, in.move);
             
             if (win) {
+                out.ok = 1;
                 snprintf(out.text, sizeof(out.text),
-                        "WINNER! %s added %d. Total=%d. Game over!",
+                        "WINNER! %s added %d. Total=%d! Game reset.",
                         player_name, in.move, g_state->total);
                 
                 // Reset game
                 g_state->total = 0;
-                g_state->game_started = 0;
-                notify_all_players(out.text);
+                rr_advance_turn();  // Start new round
             } else {
-                // Advance turn (round-robin)
-                advance_turn();
+                // Advance to next player (RR)
+                rr_advance_turn();
+                out.ok = 1;
                 snprintf(out.text, sizeof(out.text),
-                        "You added %d. Total=%d. Next turn: %s",
-                        in.move, g_state->total, g_state->players[g_state->current_turn].name);
+                        "Added %d. Total=%d. Next turn: %s",
+                        in.move, g_state->total,
+                        g_state->players[g_state->current_turn].name);
             }
             
             sem_post(g_sem);
-            out.ok = 1;
             write_all(rep_fd, &out, sizeof(out));
             
         } else if (in.type == MSG_QUIT) {
             sem_wait(g_sem);
             
-            int slot = find_player_slot_by_pid(in.pid);
+            // Remove player
+            int slot = find_player_slot_by_pid(client_pid);
             if (slot >= 0) {
                 g_state->players[slot].active = 0;
                 g_state->player_count--;
                 
-                // If quitting player was current turn, advance turn
-                if (slot == g_state->current_turn && g_state->player_count >= 2) {
-                    advance_turn();
-                }
-                
-                // If not enough players, pause game
-                if (g_state->player_count < 2) {
-                    g_state->game_started = 0;
-                    notify_all_players("Game paused - waiting for more players");
+                // If quitting player was current turn, advance
+                if (slot == g_state->current_turn && g_state->player_count > 0) {
+                    rr_advance_turn();
                 }
             }
             
@@ -266,9 +273,10 @@ static void child_session_loop(const char *req_fifo, const char *reply_fifo, con
             snprintf(out.text, sizeof(out.text), "Goodbye %s.", player_name);
             write_all(rep_fd, &out, sizeof(out));
             break;
+            
         } else {
             out.ok = 0;
-            snprintf(out.text, sizeof(out.text), "Unknown message.");
+            snprintf(out.text, sizeof(out.text), "Unknown message type.");
             write_all(rep_fd, &out, sizeof(out));
         }
     }
@@ -317,14 +325,15 @@ int main(void) {
     }
 
     printf("[SERVER] Lobby ready: %s\n", LOBBY_FIFO);
-    printf("[SERVER] Waiting for JOIN (Max %d players, %d seconds per turn)...\n", MAX_PLAYERS, TIME_QUANTUM);
+    printf("[SERVER] Round-robin with %d-second time quantum\n", RR_QUANTUM);
+    printf("[SERVER] Waiting for JOIN requests...\n");
 
     fd_set readfds;
     struct timeval timeout;
     
     while (g_running) {
-        // Check for turn timeouts
-        check_turn_timeout();
+        // Check for RR timeouts
+        rr_check_timeout();
         
         FD_ZERO(&readfds);
         FD_SET(lobby_r, &readfds);
@@ -340,14 +349,13 @@ int main(void) {
             break;
         }
         
-        if (ret == 0) continue; // Timeout
+        if (ret == 0) continue;
         
         if (FD_ISSET(lobby_r, &readfds)) {
             ClientMsg join = {0};
             int rr = read_all(lobby_r, &join, sizeof(join));
             
             if (rr <= 0) {
-                if (errno == EINTR) continue;
                 usleep(10000);
                 continue;
             }
@@ -356,60 +364,59 @@ int main(void) {
             
             sem_wait(g_sem);
             
-            int existing = find_player_slot_by_pid((pid_t)join.pid);
+            // Check if player already exists
+            int existing = find_player_slot_by_pid(join.pid);
             if (existing != -1) {
-                // Player reconnecting
                 sem_post(g_sem);
                 
-                char req_fifo[MAX_PATH];
-                snprintf(req_fifo, sizeof(req_fifo), "/tmp/race30_req_%d.fifo", (int)join.pid);
-                
+                // Send reconnection message
                 int rep_fd = open(join.reply_fifo, O_WRONLY);
                 if (rep_fd >= 0) {
                     ServerMsg resp = {0};
                     resp.ok = 1;
                     snprintf(resp.text, sizeof(resp.text),
-                            "Welcome back %s! Reconnected to existing session.",
-                            join.name);
-                    snprintf(resp.assigned_req_fifo, sizeof(resp.assigned_req_fifo), "%s", req_fifo);
+                            "Reconnected as %s", join.name);
+                    snprintf(resp.assigned_req_fifo, sizeof(resp.assigned_req_fifo),
+                            "/tmp/race30_req_%d.fifo", (int)join.pid);
                     write_all(rep_fd, &resp, sizeof(resp));
                     close(rep_fd);
                 }
                 continue;
             }
             
+            // Check for free slot
             int slot = find_free_player_slot();
             if (slot == -1) {
                 sem_post(g_sem);
                 
-                int rep_fd_full = open(join.reply_fifo, O_WRONLY);
-                if (rep_fd_full >= 0) {
-                    ServerMsg full = {0};
-                    full.ok = 0;
-                    snprintf(full.text, sizeof(full.text),
-                            "Server full (max %d players). Try again later.", MAX_PLAYERS);
-                    write_all(rep_fd_full, &full, sizeof(full));
-                    close(rep_fd_full);
+                int rep_fd = open(join.reply_fifo, O_WRONLY);
+                if (rep_fd >= 0) {
+                    ServerMsg resp = {0};
+                    resp.ok = 0;
+                    snprintf(resp.text, sizeof(resp.text),
+                            "Server full (max %d players)", MAX_PLAYERS);
+                    write_all(rep_fd, &resp, sizeof(resp));
+                    close(rep_fd);
                 }
                 continue;
             }
             
             // Register new player
             g_state->players[slot].active = 1;
-            g_state->players[slot].pid = (pid_t)join.pid;
-            snprintf(g_state->players[slot].name, sizeof(g_state->players[slot].name),
-                    "%s", join.name);
+            g_state->players[slot].pid = join.pid;
+            snprintf(g_state->players[slot].name, NAME_LEN, "%s", join.name);
             g_state->player_count++;
             
-            // If first player or game not started, set turn to this player
-            if (g_state->player_count == 1 || !g_state->game_started) {
+            // Set initial turn if first player
+            if (g_state->player_count == 1) {
                 g_state->current_turn = slot;
-                g_state->turn_start_time = time(NULL);
+                g_turn_start_time = time(NULL);
             }
             
-            debug_print_players();
+            debug_print_state();
             sem_post(g_sem);
             
+            // Create player-specific request FIFO
             char req_fifo[MAX_PATH];
             snprintf(req_fifo, sizeof(req_fifo), "/tmp/race30_req_%d.fifo", (int)join.pid);
             
@@ -417,9 +424,10 @@ int main(void) {
                 continue;
             }
             
+            // Send JOIN response
             int rep_fd = open(join.reply_fifo, O_WRONLY);
             if (rep_fd < 0) {
-                perror("open client reply fifo");
+                perror("open reply fifo");
                 unlink(req_fifo);
                 continue;
             }
@@ -427,30 +435,31 @@ int main(void) {
             ServerMsg resp = {0};
             resp.ok = 1;
             snprintf(resp.text, sizeof(resp.text),
-                    "JOIN OK. Hi %s! Assigned request FIFO: %s",
-                    join.name, req_fifo);
+                    "Joined as %s. Total players: %d/%d",
+                    join.name, g_state->player_count, MAX_PLAYERS);
             snprintf(resp.assigned_req_fifo, sizeof(resp.assigned_req_fifo), "%s", req_fifo);
             
             write_all(rep_fd, &resp, sizeof(resp));
             close(rep_fd);
             
-            pid_t cpid = fork();
-            if (cpid < 0) {
+            // Fork child to handle this player
+            pid_t child = fork();
+            if (child < 0) {
                 perror("fork");
                 unlink(req_fifo);
                 continue;
             }
             
-            if (cpid == 0) {
+            if (child == 0) {
                 child_session_loop(req_fifo, join.reply_fifo, join.name, join.pid);
             }
             
-            printf("[SERVER] Player joined: %s (pid=%d) slot=%d child=%d\n",
-                   join.name, (int)join.pid, slot, (int)cpid);
+            printf("[SERVER] New player: %s (pid=%d, slot=%d, child=%d)\n",
+                   join.name, (int)join.pid, slot, (int)child);
         }
     }
 
-    printf("\n[SERVER] Shutdown.\n");
+    printf("\n[SERVER] Shutting down...\n");
     close(lobby_r);
     close(lobby_w_dummy);
     unlink(LOBBY_FIFO);
