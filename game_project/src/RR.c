@@ -1,4 +1,4 @@
-#include <stdio.h>
+#include <stdio.h> //C++ as a base code
 #include <stdbool.h>
 
 void findWaitingTime(int processes[], int n, int bt[], int wt[], int quantum)
