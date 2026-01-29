@@ -33,8 +33,6 @@ int shared_init(GameState **out_state, sem_t **out_sem, int reset) {
     if (reset) {
         memset(st, 0, sizeof(*st));
         st->total = 0;
-        st->turn_start_time = time(NULL);
-        st->game_started = 0;
     }
 
     *out_state = st;
