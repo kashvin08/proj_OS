@@ -8,21 +8,25 @@ Race-30 is a high-performance C game server built using a hybrid concurrency mod
 fault-tolerant experience. A player starts by adding a number (1-3) to 0 (initial sum) which is later followed by the remaining players until a player reaches 30 first.
 
 -------------------------------------
+
+Core Architecture (My Contributions)
+-------------------------------------
 The server operates on three distinct layers of concurrency:
 
-1. the lobby (Parent Process): 
+1. THE LOBBY (Parent Process): 
    Uses POSIX 'select()' to monitor the Lobby FIFO. It manages 
    incoming 'JOIN' requests and acts as the process spawner.
 
-2. session handlers (Child Processes): 
+2. SESSION HANDLERS (Child Processes): 
    Every player is assigned a dedicated child process via 'fork()'.
-   This ensures "Fault Isolation" where if one player's session crashes, 
+   This ensures "Fault Isolation"—if one player's session crashes, 
    the rest of the server remains unaffected.
 
-3. system services (Background Threads):
-   - RR Scheduler Thread: Enforces a 30-second Round-Robin quantum.
+3. SYSTEM SERVICES (Background Threads):
+   - Scheduler Thread: Enforces a 30-second Round-Robin quantum.
    - Logger Thread: An asynchronous worker that writes game events 
      to 'game.log' without blocking the game logic.
+
 
 Technical Features
 ------------------
